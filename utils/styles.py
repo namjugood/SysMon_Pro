@@ -106,7 +106,6 @@ class AppStyle:
         border: 1px solid {COLOR_ACCENT};
     }}
     
-    /* 콤보박스 드롭다운 스타일 */
     QComboBox::drop-down {{
         border: none;
         width: 20px;
@@ -124,12 +123,6 @@ class AppStyle:
         border: 1px solid {COLOR_BORDER};
         selection-background-color: #585b70;
         color: {COLOR_TEXT};
-    }}
-
-    /* 특정 입력 필드 강조 */
-    QLineEdit#input_highlight {{
-        color: {COLOR_ACCENT};
-        font-weight: bold;
     }}
 
     /* [TextEdit] */
@@ -188,16 +181,30 @@ class AppStyle:
         border-bottom: 2px solid {COLOR_ACCENT};
     }}
 
-    /* [Labels] */
-    QLabel#login_error_msg {{
-        color: {COLOR_ERROR};
-        font-size: 14px;
-        padding: 20px;
-        background: {COLOR_BG_MAIN};
+    /* [Menu Bar] - 새로 추가됨 */
+    QMenuBar {{
+        background-color: {COLOR_BG_PANEL};
+        color: {COLOR_TEXT};
+        border-bottom: 1px solid {COLOR_BORDER};
     }}
-    QLabel#user_offline {{ color: #6c7086; font-weight: bold; }}
-    QLabel#user_online {{ color: {COLOR_SUCCESS}; font-weight: bold; }}
-    QLabel#app_title {{ font-size: 18px; font-weight: bold; color: {COLOR_ACCENT}; }}
+    QMenuBar::item {{
+        background-color: transparent;
+        padding: 8px 12px;
+    }}
+    QMenuBar::item:selected {{
+        background-color: {COLOR_HEADER};
+    }}
+    QMenu {{
+        background-color: {COLOR_BG_PANEL};
+        color: {COLOR_TEXT};
+        border: 1px solid {COLOR_BORDER};
+    }}
+    QMenu::item {{
+        padding: 6px 24px;
+    }}
+    QMenu::item:selected {{
+        background-color: {COLOR_HEADER};
+    }}
 
     /* [Scrollbar] */
     QScrollBar:vertical {{

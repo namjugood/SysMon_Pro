@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, 
                              QToolButton, QWidget, QSizePolicy)
 from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QColor, QPainter
 
 class Panel(QFrame):
     """기본 패널 (헤더 + 컨텐츠)"""
@@ -13,7 +14,6 @@ class Panel(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # 헤더 컨테이너 (스타일: styles.py -> #panel_header)
         header_frame = QFrame()
         header_frame.setObjectName("panel_header")
         header_frame.setFixedHeight(35)
@@ -21,7 +21,6 @@ class Panel(QFrame):
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(10, 0, 0, 0)
         
-        # 제목 라벨 (스타일: styles.py -> #panel_title)
         lbl_title = QLabel(title)
         lbl_title.setObjectName("panel_title")
         
@@ -36,7 +35,6 @@ class CollapsiblePanel(QWidget):
 
     def __init__(self, title, content_widget, parent=None):
         super().__init__(parent)
-        # 투명 컨테이너 설정 (스타일: styles.py -> #transparent_container)
         self.setObjectName("transparent_container") 
         
         self.is_collapsed = False
@@ -48,7 +46,6 @@ class CollapsiblePanel(QWidget):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
-        # 헤더 (스타일: styles.py -> #panel_header)
         self.header = QFrame()
         self.header.setObjectName("panel_header")
         self.header.setFixedHeight(self.HEADER_HEIGHT)
@@ -56,11 +53,9 @@ class CollapsiblePanel(QWidget):
         header_layout = QHBoxLayout(self.header)
         header_layout.setContentsMargins(10, 0, 10, 0)
 
-        # 제목 (스타일: styles.py -> #panel_title)
         self.lbl_title = QLabel(title)
         self.lbl_title.setObjectName("panel_title")
         
-        # 최소화 버튼 (스타일: styles.py -> QToolButton)
         self.btn_toggle = QToolButton()
         self.btn_toggle.setText("▼") 
         self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -93,3 +88,50 @@ class CollapsiblePanel(QWidget):
             self.btn_toggle.setText("▼")
             self.setMinimumHeight(self.HEADER_HEIGHT)
             self.setMaximumHeight(16777215)
+
+class LoadingOverlay(QWidget):
+    """화면을 덮는 반투명 로딩 오버레이 (최상위 창 모드)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        # [핵심] 부모 창에 종속되지 않고 독립적인 최상위 창으로 설정
+        # Frameless: 테두리 없음 / Tool: 작업표시줄 안 뜸 / WindowStaysOnTopHint: 항상 위
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.lbl_msg = QLabel("Processing...")
+        self.lbl_msg.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 24px;
+                background-color: transparent;
+                border: none;
+            }
+        """)
+        layout.addWidget(self.lbl_msg)
+
+    def paintEvent(self, event):
+        """반투명 검은색 배경 그리기"""
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 180)) # 조금 더 진하게 (180)
+
+    def show_loading(self, msg="Loading..."):
+        self.lbl_msg.setText(msg)
+        
+        # 부모(메인윈도우)의 위치와 크기를 그대로 따라감
+        if self.parent():
+            geo = self.parent().geometry() # 화면상 절대 좌표 및 크기
+            self.setGeometry(geo)
+            
+        self.show()
+        self.raise_() # 최상단 보장
+
+    def hide_loading(self):
+        self.hide()

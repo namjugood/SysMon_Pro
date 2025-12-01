@@ -2,15 +2,57 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSplitter, QTextEdit, QLabel, QFrame, QPushButton, 
                              QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
                              QTabWidget, QDateEdit, QGridLayout, QMessageBox, QComboBox)
-from PyQt6.QtCore import Qt, QDate, QTime
+from PyQt6.QtCore import Qt, QDate, QTime, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QTextDocument, QTextCursor, QTextCharFormat, QFont
 from datetime import datetime
 
 from config.settings import APP_TITLE, LOGIN_URL
 from utils.styles import AppStyle
-from core.mock_api import MockApiService
-from ui.widgets.custom_widgets import Panel, CollapsiblePanel
+from core.api_service import ApiService
+from ui.widgets.custom_widgets import Panel, CollapsiblePanel, LoadingOverlay
+from ui.widgets.menu_bar import AppMenuBar
 from ui.login_dialog import LoginDialog
+from ui.api_login_dialog import ApiLoginDialog
+from utils.config_manager import ConfigManager
+
+# 로그 조회용 워커
+class LogLoadWorker(QThread):
+    finished_signal = pyqtSignal(list)
+
+    def __init__(self, api_service, base_url, cookies, start_str, end_str, query):
+        super().__init__()
+        self.api = api_service
+        self.base_url = base_url
+        self.cookies = cookies
+        self.start_str = start_str
+        self.end_str = end_str
+        self.query = query
+
+    def run(self):
+        data = self.api.get_system_logs(
+            self.base_url,
+            self.cookies,
+            self.start_str,
+            self.end_str,
+            self.query
+        )
+        self.finished_signal.emit(data)
+
+# 로그인용 워커
+class LoginWorker(QThread):
+    finished_signal = pyqtSignal(bool, object, str)
+
+    def __init__(self, api_service, url, uid, pwd, domain):
+        super().__init__()
+        self.api_service = api_service
+        self.url = url
+        self.uid = uid
+        self.pwd = pwd
+        self.domain = domain
+
+    def run(self):
+        success, cookies, msg = self.api_service.login(self.url, self.uid, self.pwd, self.domain)
+        self.finished_signal.emit(success, cookies, msg)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -20,11 +62,19 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(AppStyle.DARK_THEME)
         
         self.cookies = {} 
-        self.api_service = MockApiService()
+        self.current_base_url = None
+        self.api_service = ApiService()
+        
         self.init_ui()
+        
+        # [중요] 오버레이를 메인윈도우의 자식으로 생성
+        self.overlay = LoadingOverlay(self)
+        
         self.load_data()
 
     def init_ui(self):
+        self.setMenuBar(AppMenuBar(self))
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -44,6 +94,17 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(self.tabs)
 
+    # [신규] 창 크기/위치 변경 시 오버레이 동기화
+    def resizeEvent(self, event):
+        if hasattr(self, 'overlay') and self.overlay.isVisible():
+            self.overlay.setGeometry(self.geometry())
+        super().resizeEvent(event)
+
+    def moveEvent(self, event):
+        if hasattr(self, 'overlay') and self.overlay.isVisible():
+            self.overlay.setGeometry(self.geometry())
+        super().moveEvent(event)
+
     def create_top_bar(self):
         container = QFrame()
         container.setFixedHeight(60)
@@ -55,44 +116,102 @@ class MainWindow(QMainWindow):
         title = QLabel("SysMon Pro")
         title.setObjectName("app_title")
         
-        self.edt_url = QLineEdit()
-        self.edt_url.setText(LOGIN_URL) 
-        self.edt_url.setPlaceholderText("접속할 시스템의 URL을 입력하세요")
+        self.quick_login_widget = QWidget()
+        self.quick_login_widget.setObjectName("transparent_container")
+        self.quick_login_layout = QHBoxLayout(self.quick_login_widget)
+        self.quick_login_layout.setContentsMargins(0, 0, 0, 0)
+        self.quick_login_layout.setSpacing(5)
         
-        btn_go = QPushButton("Connect / Login")
-        btn_go.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_go.setFixedWidth(130)
-        btn_go.clicked.connect(self.open_login_dialog)
+        self.refresh_login_buttons()
 
         self.lbl_user_info = QLabel("Guest | Offline")
         self.lbl_user_info.setObjectName("user_offline")
 
         layout.addWidget(title)
-        layout.addWidget(self.edt_url, 1)
-        layout.addWidget(btn_go)
+        layout.addWidget(self.quick_login_widget) 
+        layout.addStretch() 
         layout.addWidget(self.lbl_user_info)
         
         return container
 
-    def open_login_dialog(self):
-        target_url = self.edt_url.text().strip()
-        if not target_url:
-            QMessageBox.warning(self, "URL 오류", "접속할 URL을 입력해주세요.")
+    def refresh_login_buttons(self):
+        while self.quick_login_layout.count():
+            item = self.quick_login_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        
+        urls = ConfigManager.load_urls()
+        
+        if not urls:
+            lbl_empty = QLabel("(Tools > Options 메뉴에서 페이지를 추가하세요)")
+            lbl_empty.setStyleSheet("color: #6c7086; font-style: italic;")
+            self.quick_login_layout.addWidget(lbl_empty)
             return
 
-        dlg = LoginDialog(url=target_url, parent=self)
-        if dlg.exec():
-            self.cookies = dlg.get_cookies()
-            if self.cookies:
-                self.lbl_user_info.setText("Admin | ✅ Online")
-                self.lbl_user_info.setObjectName("user_online")
-                self.lbl_user_info.style().unpolish(self.lbl_user_info)
-                self.lbl_user_info.style().polish(self.lbl_user_info)
-                QMessageBox.information(self, "연동 성공", "세션이 성공적으로 확보되었습니다.")
-            else:
-                self.lbl_user_info.setText("Guest | ⚠️ Cookie Not Found")
-                self.lbl_user_info.setObjectName("user_offline")
+        for item in urls:
+            name = item.get('name', 'Unknown')
+            url = item.get('url', '')
+            user_id = item.get('id', '')
+            password = item.get('password', '')
+            
+            btn = QPushButton(name)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(url)
+            btn.clicked.connect(lambda checked, u=url, n=name, i=user_id, p=password: 
+                                self.open_login_dialog(u, n, i, p))
+            
+            self.quick_login_layout.addWidget(btn)
 
+    def open_login_dialog(self, target_url, page_name, user_id="", password=""):
+        if not target_url:
+            QMessageBox.warning(self, "Link Error", "Invalid URL configuration.")
+            return
+
+        self.login_dlg = ApiLoginDialog(target_url, user_id, password, parent=self)
+        self.login_dlg.login_requested.connect(
+            lambda url, uid, pw, domain: self.process_login(url, uid, pw, domain, page_name)
+        )
+        
+        self.login_dlg.exec()
+
+    def process_login(self, url, uid, pw, domain, page_name):
+        """로그인 요청 처리"""
+        # [수정] 오버레이를 현재 메인윈도우 크기에 맞춰 띄움 (Reparent 하지 않음)
+        self.overlay.setGeometry(self.geometry())
+        self.overlay.show_loading("Logging in...")
+        
+        # 워커 시작
+        self.login_worker = LoginWorker(self.api_service, url, uid, pw, domain)
+        self.login_worker.finished_signal.connect(
+            lambda s, c, m: self.on_login_finished(s, c, m, url, page_name)
+        )
+        self.login_worker.start()
+
+    def on_login_finished(self, success, cookies, msg, target_url, page_name):
+        self.overlay.hide_loading()
+        
+        if success:
+            self.cookies = cookies
+            self.current_base_url = target_url
+            
+            self.lbl_user_info.setText(f"{page_name} | ✅ Online")
+            self.lbl_user_info.setObjectName("user_online")
+            self.lbl_user_info.style().unpolish(self.lbl_user_info)
+            self.lbl_user_info.style().polish(self.lbl_user_info)
+            
+            QMessageBox.information(self.login_dlg, "Login Success", f"Successfully connected to {page_name}")
+            self.login_dlg.accept() # 로그인 성공 시에만 창 닫기
+            self.load_data()
+        else:
+            QMessageBox.critical(self.login_dlg, "Login Failed", f"Failed to login:\n{msg}")
+            self.login_dlg.set_controls_enabled(True) 
+            self.lbl_user_info.setText("Guest | ⚠️ Login Failed")
+            self.lbl_user_info.setObjectName("user_offline")
+
+    # -------------------------------------------------------------------------
+    # 이하 기존 로직 (탭, 테이블, 필터링 등)
+    # -------------------------------------------------------------------------
     def setup_system_log_tab(self, parent_widget):
         layout = QVBoxLayout(parent_widget)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -162,8 +281,6 @@ class MainWindow(QMainWindow):
     def update_highlights(self):
         extra_selections = []
         doc = self.txt_full_log.document()
-        
-        # 1. 에러 라인
         error_keywords = ["error", "fatal", "exception"]
         
         block = doc.begin()
@@ -175,7 +292,6 @@ class MainWindow(QMainWindow):
                 cursor.setPosition(block.position())
                 cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
                 selection.cursor = cursor
-                
                 fmt = QTextCharFormat()
                 fmt.setBackground(AppStyle.HIGHLIGHT_ERROR_BG) 
                 fmt.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
@@ -183,7 +299,6 @@ class MainWindow(QMainWindow):
                 extra_selections.append(selection)
             block = block.next()
 
-        # 2. 검색어
         search_text = self.edt_log_search.text()
         if search_text:
             cursor = QTextCursor(doc)
@@ -192,34 +307,24 @@ class MainWindow(QMainWindow):
                 if not cursor.isNull():
                     selection = QTextEdit.ExtraSelection()
                     selection.cursor = cursor
-                    
                     fmt = QTextCharFormat()
                     fmt.setForeground(AppStyle.HIGHLIGHT_SEARCH_TEXT)
                     fmt.setFontWeight(QFont.Weight.Bold)
                     selection.format = fmt
                     extra_selections.append(selection)
-
         self.txt_full_log.setExtraSelections(extra_selections)
 
     def find_text_in_log(self, forward=True):
         search_text = self.edt_log_search.text()
-        if not search_text:
-            return
-
+        if not search_text: return
         flags = QTextDocument.FindFlag(0)
-        if not forward:
-            flags |= QTextDocument.FindFlag.FindBackward
-        
+        if not forward: flags |= QTextDocument.FindFlag.FindBackward
         found = self.txt_full_log.find(search_text, flags)
-        
         if not found:
             cursor = self.txt_full_log.textCursor()
-            if forward:
-                cursor.movePosition(QTextCursor.MoveOperation.Start)
-            else:
-                cursor.movePosition(QTextCursor.MoveOperation.End)
+            if forward: cursor.movePosition(QTextCursor.MoveOperation.Start)
+            else: cursor.movePosition(QTextCursor.MoveOperation.End)
             self.txt_full_log.setTextCursor(cursor)
-            
             if not self.txt_full_log.find(search_text, flags):
                 QMessageBox.information(self, "검색 결과", f"'{search_text}'을(를) 찾을 수 없습니다.")
                 return
@@ -232,7 +337,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 5, 10, 5)
         
         lbl_period = QLabel("조회기간:")
-        
         times = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
 
         self.date_start = QDateEdit()
@@ -267,7 +371,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(lbl_tilde)
         layout.addWidget(self.date_end)
         layout.addWidget(self.time_end)
-        
         layout.addStretch()
         
         self.search_input = QLineEdit()
@@ -296,13 +399,10 @@ class MainWindow(QMainWindow):
         self.edt_guid.setReadOnly(True)
         self.edt_guid.setObjectName("input_highlight") 
         self.edt_guid.setAlignment(Qt.AlignmentFlag.AlignLeft) 
-        
         self.edt_app = QLineEdit()
         self.edt_app.setReadOnly(True)
-        
         self.edt_service = QLineEdit()
         self.edt_service.setReadOnly(True)
-        
         self.edt_op = QLineEdit()
         self.edt_op.setReadOnly(True)
 
@@ -322,14 +422,12 @@ class MainWindow(QMainWindow):
         self.txt_raw_in = QTextEdit()
         self.txt_raw_in.setReadOnly(True)
         self.txt_raw_in.setObjectName("detail_log_box") 
-        
         self.txt_raw_out = QTextEdit()
         self.txt_raw_out.setReadOnly(True)
         self.txt_raw_out.setObjectName("detail_log_box")
 
         layout.addWidget(self.txt_raw_in, 3, 0, 1, 2)
         layout.addWidget(self.txt_raw_out, 3, 2, 1, 2)
-        
         layout.setRowStretch(3, 1)
 
         return CollapsiblePanel("이미지 로그 상세", content)
@@ -348,68 +446,47 @@ class MainWindow(QMainWindow):
         return table
 
     def reset_details(self):
-        """[신규] 상세 정보 필드 초기화 및 패널 숨김 (검색 시 호출)"""
-        # 1. 상세 로그 텍스트 초기화
         self.txt_full_log.clear()
-        
-        # 2. 이미지 로그 상세 필드 초기화
         self.edt_guid.clear()
         self.edt_app.clear()
         self.edt_service.clear()
         self.edt_op.clear()
         self.txt_raw_in.clear()
         self.txt_raw_out.clear()
-        
-        # 3. 패널 숨기기
         self.detail_panel.hide()
 
     def load_data(self):
-        # [수정] 검색 시작 시 상세 정보 초기화
         self.reset_details()
-        
         self.table.setSortingEnabled(False)
         
-        all_data = self.api_service.get_log_data(count=100)
-        self.data_list = []
-        
-        search_query = self.search_input.text().lower().strip()
-        
+        if not self.cookies or not self.current_base_url:
+            self.table.setRowCount(0)
+            return
+
+        search_query = self.search_input.text().strip()
         str_start = f"{self.date_start.date().toString('yyyy-MM-dd')} {self.time_start.currentText()}:00"
         str_end = f"{self.date_end.date().toString('yyyy-MM-dd')} {self.time_end.currentText()}:59"
-        
-        try:
-            dt_start = datetime.strptime(str_start, "%Y-%m-%d %H:%M:%S")
-            dt_end = datetime.strptime(str_end, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            dt_start = datetime.min
-            dt_end = datetime.max
 
+        self.overlay.setGeometry(self.geometry())
+        self.overlay.show_loading("Fetching Logs...")
+        
+        self.log_worker = LogLoadWorker(
+            self.api_service,
+            self.current_base_url,
+            self.cookies,
+            str_start,
+            str_end,
+            search_query
+        )
+        self.log_worker.finished_signal.connect(self.on_data_loaded)
+        self.log_worker.start()
+
+    def on_data_loaded(self, data_list):
+        self.data_list = data_list
         self.table.setRowCount(0)
         
-        for item in all_data:
-            try:
-                item_dt = datetime.strptime(item['timestamp'], "%Y-%m-%d %H:%M:%S")
-                if not (dt_start <= item_dt <= dt_end):
-                    continue
-            except:
-                pass
-
-            if search_query:
-                values = [
-                    item['guid'].lower(),
-                    item['user_ip'],
-                    item['application'].lower(),
-                    item['service'].lower(),
-                    item['operation'].lower()
-                ]
-                if not any(search_query in v for v in values):
-                    continue
-
-            self.data_list.append(item)
-            
-            row_idx = self.table.rowCount()
+        for row_idx, item in enumerate(self.data_list):
             self.table.insertRow(row_idx)
-            
             mapping = [item['timestamp'], item['guid'], item['user_ip'], "", item['application'], item['service'], item['operation']]
             
             for col_idx, val in enumerate(mapping):
@@ -423,23 +500,20 @@ class MainWindow(QMainWindow):
                     self.table.setItem(row_idx, col_idx, QTableWidgetItem(val))
         
         self.table.setSortingEnabled(True)
+        self.overlay.hide_loading()
 
     def on_row_clicked(self, item):
         row = item.row()
         target_guid = self.table.item(row, 1).text()
-        
         data = next((d for d in self.data_list if d['guid'] == target_guid), None)
-        
         if data:
             if self.detail_panel.isHidden():
                 self.detail_panel.show()
-
             self.edt_guid.setText(data['guid'])
             self.edt_app.setText(data['application'])
             self.edt_service.setText(data['service'])
             self.edt_op.setText(data['operation'])
             self.txt_raw_in.setText(data['raw_input'])
             self.txt_raw_out.setText(data['raw_output'])
-            
             self.txt_full_log.setText(data['detail_log'])
             self.update_highlights()
